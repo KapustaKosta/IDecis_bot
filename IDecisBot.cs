@@ -15,7 +15,12 @@ namespace IDecisBot
         {
             { "2ew", new User()},
             { "2ye", new User()},
-            { "2xc", new User()}
+            { "2ux", new User()},
+            { "2xv", new User()},
+            { "2sd", new User()},
+            { "2kd", new User()},
+            { "2qw", new User()},
+            { "2tr", new User()}
         };
 
         private string leaderID = "2qt";
