@@ -1,16 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
-using Taikandi.Telebot;
-using Taikandi.Telebot.Types;
+using Telegram.Bot;
+using Telegram.Bot.Exceptions;
+using Telegram.Bot.Polling;
+using Telegram.Bot.Types;
+using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace IDecisBot
 {
-    class IDecisBot
+    class IDecisBot : TelegramBotClient
     {
-        private readonly Telebot _telebot = new Telebot("6195704050:AAEms2By2Bh3-Bptj1YRjrg1cxos24g1ejQ");
-
         private Dictionary<string, User> commandIDs = new Dictionary<string, User>()
         {
             { "2ew", new User()},
@@ -31,97 +34,159 @@ namespace IDecisBot
 
         private List<string> criterias = new List<string>();
 
-        private bool listenForIdea = false;
-
-        private bool listenForCriteria = false;
-
-
-        public async Task RunAsync()
+        public IDecisBot(string token)
+            : base(token)
         {
-            // Used for getting only the unconfirmed updates.
-            // It is recommended to stored this value between sessions. 
-            // More information at https://core.telegram.org/bots/api#getting-updates
-            var offset = 0L;
 
-            while (true)
-            {
-                // Use this method to receive incoming updates using long polling.
-                // Or use Telebot.SetWebhook() method to specify a URL to receive incoming updates.
-                List<Update> updates = (await this._telebot.GetUpdatesAsync(offset).ConfigureAwait(false)).ToList();
-                if (updates.Any())
-                {
-                    offset = updates.Max(u => u.Id) + 1;
-
-                    foreach (Update update in updates)
-                    {
-                        switch (update.Type)
-                        {
-                            case UpdateType.Message:
-                                await this.CheckMessagesAsync(update.Message).ConfigureAwait(false);
-                                break;
-                            case UpdateType.InlineQuery:
-                                await this.CheckInlineQueryAsync(update).ConfigureAwait(false);
-                                break;
-                            case UpdateType.ChosenInlineResult:
-                                this.CheckChosenInlineResult(update);
-                                break;
-                            default:
-                                throw new ArgumentOutOfRangeException();
-                        }
-                    }
-                }
-
-                await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            }
         }
 
-        private async Task CheckMessagesAsync(Message message)
+        private ReplyKeyboardMarkup replyMarkupUser = new(new[]
         {
-            // Assume we are doing more than echoing stuff.
-            if (message == null)
+                    new KeyboardButton[] { "Добавить идею"},
+                    new KeyboardButton[] { "Добавить критерий"},
+                    new KeyboardButton[] { "Посмотреть статистику"},
+        })
+        {
+            ResizeKeyboard = true
+        };
+
+        private ReplyKeyboardMarkup replyMarkupLeader = new(new[]
+        {
+                    new KeyboardButton[] { "Добавить идею"},
+                    new KeyboardButton[] { "Добавить критерий"},
+                    new KeyboardButton[] { "Начать голосование"},
+                    new KeyboardButton[] { "Посмотреть статистику"},
+                })
+        {
+            ResizeKeyboard = true
+        };
+
+        private ReplyKeyboardMarkup replyMarkupUnathorized = new(new[]
+        {
+                    new KeyboardButton[] { "Авторизация"},
+        })
+        {
+            ResizeKeyboard = true
+        };
+
+        private ReplyKeyboardMarkup replyMarkupVoting = new(new[]
+{
+                    new KeyboardButton[] { "1", "2", "3", "4", "5" },
+                    new KeyboardButton[] { "6", "7", "8", "9", "10" }
+        })
+        {
+            ResizeKeyboard = true
+        };
+
+        /// <summary>
+        /// Starts receiving updates.
+        /// </summary>
+        /// <param name="receiverOptions"></param>
+        /// <param name="cancellationTokenSource"></param>
+        public void StartReceiving(ReceiverOptions receiverOptions, CancellationTokenSource cancellationTokenSource)
+        {
+            this.StartReceiving(
+                HandleUpdateAsync,
+                HandleErrorAsync,
+                receiverOptions,
+                cancellationToken: cancellationTokenSource.Token);
+        }
+
+        /// <summary>
+        /// Handles chat bot updades.
+        /// </summary>
+        /// <param name="botClient"></param>
+        /// <param name="update"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        private async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
+        {
+            // Only process Message updates: https://core.telegram.org/bots/api#message
+            if (update.Type != UpdateType.Message)
                 return;
 
-            // This method will tell the user that something is happening on the bot's side.
-            // It is recommended to use this method when a response from the bot 
-            // will take a noticeable amount of time to arrive.
-            await this._telebot.SendChatActionAsync(message.Chat.Id, ChatAction.Typing).ConfigureAwait(false);
-            await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            // Only process text messages
+            if (update.Message!.Type != MessageType.Text)
+                return;
 
-            if (listenForIdea == true)
+            var chatId = update.Message.Chat.Id;
+            var userFirstName = update.Message.Chat.FirstName;
+            var messageText = update.Message.Text;
+
+            if(messageText == "/start")
             {
-                ideas.Add(message.Text);
-                listenForIdea = false;
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Идея " + message.Text + " добавлена").ConfigureAwait(false);
+                await HandleStartCommandAsync(botClient, cancellationToken, chatId, userFirstName);
                 return;
             }
 
-            if (listenForCriteria == true)
-            {
-                criterias.Add(message.Text);
-                listenForCriteria = false;
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Критерий добавлен").ConfigureAwait(false);
-                return;
-            }
+            Console.WriteLine($"Received a '{messageText}' message in chat {chatId}.");
 
             User userChat = null;
 
             foreach (string login in commandIDs.Keys)
             {
                 User user = commandIDs[login];
-                if (user.chatID.Equals(message.Chat.Id))
+                if (user.chatID.Equals(chatId))
                 {
                     userChat = user;
                 }
             }
 
-            if(userChat == null && message.Chat.Id.Equals(leaderChat.chatID))
+            if(userChat == null && chatId.Equals(leaderChat.chatID))
             {
                 userChat = leaderChat;
+                userChat.leader = true;
             }
 
-            if (userChat != null && userChat.inPool == true)
+            //
+
+            if (messageText.Trim() == "Авторизация")
             {
-                if (int.TryParse(message.Text, out int value))
+                Message sendMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Пожалуйста, пришлите ваш логин");
+                return;
+            }
+
+            if (messageText.Trim() == leaderID && leaderChat.chatID == -1)
+            {
+                leaderChat.chatID = chatId;
+                Message sendMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Вы авторизованы как лидер команды",
+                replyMarkup: replyMarkupLeader);
+                return;
+            }
+
+            if (commandIDs.ContainsKey(messageText.Trim()) && commandIDs[messageText.Trim()].chatID == -1)
+            {
+                // This method will send a text message (obviously).
+                User user = commandIDs[messageText.Trim()];
+
+                user.chatID = chatId;
+
+                Message sendMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Вы авторизованы как участник команды!",
+                replyMarkup: replyMarkupUser);
+                return;
+            }
+
+            //
+
+            if(userChat == null)
+            {
+                Message sendMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Вы не авторизовались!");
+                return;
+            }
+
+            //
+
+            if(userChat.inPool == true)
+            {
+                if (int.TryParse(messageText.Trim(), out int value))
                 {
                     if (value >= 1 && value <= 10)
                     {
@@ -130,13 +195,13 @@ namespace IDecisBot
                     }
                     else
                     {
-                        await this._telebot.SendMessageAsync(message.Chat.Id, "Число должно быть от 1 до 10").ConfigureAwait(false);
+                        await userChat.SendMessageAsync(botClient, "Число должно быть от 1 до 10", replyMarkupVoting).ConfigureAwait(false);
                         return;
                     }
                 }
                 else
                 {
-                    await this._telebot.SendMessageAsync(message.Chat.Id, "Пожалуйста, введите число").ConfigureAwait(false);
+                    await userChat.SendMessageAsync(botClient, "Пожалуйста, введите число", replyMarkupVoting).ConfigureAwait(false);
                     return;
                 }
 
@@ -146,175 +211,198 @@ namespace IDecisBot
                     userChat.poolResults.Add(new int[criterias.Count]);
                     userChat.criteriaNum = 0;
 
-                    if(userChat.poolQuestionNum < ideas.Count)
+                    if (userChat.poolQuestionNum < ideas.Count)
                     {
-                        await this._telebot.SendMessageAsync(userChat.chatID, "Идея: " + ideas[userChat.poolQuestionNum]).ConfigureAwait(false);
+                        await userChat.SendMessageAsync(botClient, "Идея: " + ideas[userChat.poolQuestionNum], null).ConfigureAwait(false);
                     }
 
                 }
 
                 if (userChat.poolQuestionNum >= ideas.Count)
                 {
-                    await this._telebot.SendMessageAsync(message.Chat.Id, "вы успешно проголосовали").ConfigureAwait(false);
+                    await userChat.SendMessageAsync(botClient, "вы успешно проголосовали", userChat.leader ? replyMarkupLeader: replyMarkupUser).ConfigureAwait(false);
                     userChat.inPool = false;
                     userChat.poolQuestionNum = 0;
                     return;
                 }
 
-                await this._telebot.SendMessageAsync(userChat.chatID, "Пожалуйста, проголосуйте от 0 до 10 за эту идею по критерию " + criterias[userChat.criteriaNum]).ConfigureAwait(false);
-            }
-
-            //
-
-            if (message.Text.Trim() == "Авторизация")
-            {
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Пожалуйста, пришлите ваш логин").ConfigureAwait(false);
-            }
-
-            if (message.Text.Trim() == leaderID && leaderChat.chatID == -1)
-            {
-                leaderChat.chatID = message.Chat.Id;
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Вы авторизованы как лидер команды").ConfigureAwait(false);
-                return;
-            }
-
-            if (commandIDs.ContainsKey(message.Text.Trim()) && commandIDs[message.Text.Trim()].chatID == -1)
-            {
-                // This method will send a text message (obviously).
-                User user = commandIDs[message.Text.Trim()];
-
-                user.chatID = message.Chat.Id;
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Вы авторизованы как участник команды").ConfigureAwait(false);
+                await userChat.SendMessageAsync(botClient, "Пожалуйста, проголосуйте от 0 до 10 за эту идею по критерию " + criterias[userChat.criteriaNum], replyMarkupVoting);
                 return;
             }
 
             //
 
-            if (message.Text.Trim() == "Добавить идею")
+            if (userChat.listenForIdea)
             {
-                listenForIdea = true;
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Пожалуйста, введите название идеи").ConfigureAwait(false);
+                ideas.Add(messageText);
+                userChat.listenForIdea = false;
+                await userChat.SendMessageAsync(botClient, "Идея " + messageText + " добавлена", userChat.leader ? replyMarkupLeader : replyMarkupUser);
+                return;
             }
 
-            if (message.Text.Trim() == "Добавить критерий")
+            if (userChat.listenForCriteria)
             {
-                listenForCriteria = true;
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Пожалуйста, введите описание критерия").ConfigureAwait(false);
+                criterias.Add(messageText);
+                userChat.listenForCriteria = false;
+                await userChat.SendMessageAsync(botClient, "Критерий добавлен", userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
+                return;
             }
 
-            //
+            string command = messageText.ToLower().Trim();
 
-            if (message.Text.Trim() == "Начать голосование" && message.Chat.Id.Equals(leaderChat.chatID))
+            if (command == "добавить идею")
             {
-                if(ideas.Count == 0)
-                {
-                    await this._telebot.SendMessageAsync(message.Chat.Id, "Нет идеи, за которые можно проголосовать. Сначала добавьте идеи").ConfigureAwait(false);
-                    return;
-                }
+                userChat.listenForIdea = true;
+                await userChat.SendMessageAsync(botClient, "Пожалуйста, введите название идеи", null).ConfigureAwait(false);
+                return;
+            }
 
-                if (criterias.Count == 0)
-                {
-                    await this._telebot.SendMessageAsync(message.Chat.Id, "Нет критериев, по которым нужно проголосовать. Сначала добавьте критерии").ConfigureAwait(false);
-                    return;
-                }
-
-                await this._telebot.SendMessageAsync(message.Chat.Id, "Голосование начато").ConfigureAwait(false);
-                foreach (string userLogin in commandIDs.Keys)
-                {
-                    User user = commandIDs[userLogin];
-                    if (user.chatID != -1)
-                    {
-                        user.inPool = true;
-                        user.poolResults.Clear();
-                        await this._telebot.SendMessageAsync(user.chatID, "Идея: " + ideas[0]).ConfigureAwait(false);
-                        await this._telebot.SendMessageAsync(user.chatID, "Пожалуйста, проголосуйте от 0 до 10 за эту идею по критерию " + criterias[0]).ConfigureAwait(false);
-                        user.criteriaNum = 0;
-                        user.poolResults.Add(new int[criterias.Count]);
-                    }
-                }
-                leaderChat.inPool = true;
-                leaderChat.poolResults.Clear();
-                await this._telebot.SendMessageAsync(leaderChat.chatID, "Идея: " + ideas[0]).ConfigureAwait(false);
-                await this._telebot.SendMessageAsync(leaderChat.chatID, "Пожалуйста, проголосуйте от 0 до 10 за эту идею по критерию " + criterias[0]).ConfigureAwait(false);
-                leaderChat.criteriaNum = 0;
-                leaderChat.poolResults.Add(new int[criterias.Count]);
+            if (command == "добавить критерий")
+            {
+                userChat.listenForCriteria = true;
+                await userChat.SendMessageAsync(botClient, "Пожалуйста, введите описание критерия", null).ConfigureAwait(false);
+                return;
             }
 
             //
 
-            if (message.Text.Trim() == "Посмотреть статистику")
+            if (command == "начать голосование" && chatId.Equals(leaderChat.chatID))
             {
-                for(int i = 0; i < ideas.Count; i++)
+                await StartQuestionaryAsync(userChat, botClient).ConfigureAwait(false);
+                return;
+            }
+
+            //
+
+            if (command == "посмотреть статистику")
+            {
+                await SendStatisticsAsync(userChat, botClient).ConfigureAwait(false);
+                return;
+            }
+
+            await userChat.SendMessageAsync(botClient, "Я не знаю такой команды :(", userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
+        }
+
+        private async Task StartQuestionaryAsync(User userChat, ITelegramBotClient botClient)
+        {
+            if (ideas.Count == 0)
+            {
+                await userChat.SendMessageAsync(botClient, "Нет идеи, за которые можно проголосовать. Сначала добавьте идеи", userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
+                return;
+            }
+
+            if (criterias.Count == 0)
+            {
+                await userChat.SendMessageAsync(botClient, "Нет критериев, по которым нужно проголосовать. Сначала добавьте критерии", userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
+                return;
+            }
+
+            await userChat.SendMessageAsync(botClient, "Голосование начато", null).ConfigureAwait(false);
+            foreach (string userLogin in commandIDs.Keys)
+            {
+                User user = commandIDs[userLogin];
+                if (user.chatID != -1)
                 {
-                    double med = 0;
-                    int a = 0;
+                    user.inPool = true;
+                    user.poolResults.Clear();
+                    await userChat.SendMessageAsync(botClient, "Идея: " + ideas[0], null);
+                    await userChat.SendMessageAsync(botClient, "Пожалуйста, проголосуйте от 0 до 10 за эту идею по критерию " + criterias[0], replyMarkupVoting);
+                    user.criteriaNum = 0;
+                    user.poolResults.Add(new int[criterias.Count]);
+                }
+            }
+            leaderChat.inPool = true;
+            leaderChat.poolResults.Clear();
+            await userChat.SendMessageAsync(botClient, "Идея: " + ideas[0], null).ConfigureAwait(false);
+            await userChat.SendMessageAsync(botClient, "Пожалуйста, проголосуйте от 0 до 10 за эту идею по критерию " + criterias[0], replyMarkupVoting).ConfigureAwait(false);
+            leaderChat.criteriaNum = 0;
+            leaderChat.poolResults.Add(new int[criterias.Count]);
+            return;
+        }
 
-                    foreach(User user in commandIDs.Values)
-                    {
-                        if (user.poolResults.Count >= i + 1)
-                        {
-                            double medCr = 0;
-                            for (int j = 0; j < user.poolResults[i].Length; j++)
-                            {
-                                medCr += user.poolResults[i][j];
-                            }
-                            med += ((double)medCr / user.poolResults[i].Length);
-                            a++;
-                        }
-                    }
+        private async Task SendStatisticsAsync(User userChat, ITelegramBotClient botClient)
+        {
+            for (int i = 0; i < ideas.Count; i++)
+            {
+                double med = 0;
+                int a = 0;
 
-                    if (leaderChat.poolResults.Count >= i + 1)
+                foreach (User user in commandIDs.Values)
+                {
+                    if (user.poolResults.Count >= i + 1)
                     {
                         double medCr = 0;
-                        for (int j = 0; j < leaderChat.poolResults[i].Length; j++)
+                        for (int j = 0; j < user.poolResults[i].Length; j++)
                         {
-                            medCr += leaderChat.poolResults[i][j];
+                            medCr += user.poolResults[i][j];
                         }
-                        med += ((double)medCr / leaderChat.poolResults[i].Length);
+                        med += ((double)medCr / user.poolResults[i].Length);
                         a++;
                     }
-
-                    string s = (Math.Round((double) med / a, 2)).ToString();
-
-                    await this._telebot.SendMessageAsync(leaderChat.chatID, "За идею " + ideas[i] + " проголосовало " + a + " человек, средний балл: " + s).ConfigureAwait(false);
                 }
+
+                if (leaderChat.poolResults.Count >= i + 1)
+                {
+                    double medCr = 0;
+                    for (int j = 0; j < leaderChat.poolResults[i].Length; j++)
+                    {
+                        medCr += leaderChat.poolResults[i][j];
+                    }
+                    med += ((double)medCr / leaderChat.poolResults[i].Length);
+                    a++;
+                }
+
+                string s = (Math.Round((double)med / a, 2)).ToString();
+
+                await userChat.SendMessageAsync(botClient, "За идею " + ideas[i] + " проголосовало " + a + " человек, средний балл: " + s, userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
             }
         }
 
-        private async Task CheckInlineQueryAsync(Update update)
+        /// <summary>
+        /// Hadles user's message sent to chat bot.
+        /// </summary>
+        /// <param name="botClient"></param>
+        /// <param name="cancellationToken"></param>
+        /// <param name="chatId"></param>
+        /// <param name="messageText"></param>
+        /// <returns></returns>
+        private async Task HandleUserInputAsync(ITelegramBotClient botClient, CancellationToken cancellationToken, long chatId, string messageText)
         {
-            // Telebot will support all 19 types of InlineQueryResult.
-            // To see available inline query results:
-            // https://core.telegram.org/bots/api#answerinlinequery
-            var articleResult = new InlineQueryResultArticle
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Title = "This is a title",
-                Url = "https://core.telegram.org/bots/api#inlinequeryresultarticle"
-            };
 
-            var photoResult = new InlineQueryResultPhoto
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Url = "https://telegram.org/file/811140636/1/hzUbyxse42w/4cd52d0464b44e1e5b",
-                ThumbnailUrl = "https://telegram.org/file/811140636/1/hzUbyxse42w/4cd52d0464b44e1e5b"
-            };
-
-
-            var gifResult = new InlineQueryResultGif
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Url = "http://i.giphy.com/ya4eevXU490Iw.gif",
-                ThumbnailUrl = "http://i.giphy.com/ya4eevXU490Iw.gif"
-            };
-
-            var results = new InlineQueryResult[] { articleResult, photoResult, gifResult };
-            await this._telebot.AnswerInlineQueryAsync(update.InlineQuery.Id, results).ConfigureAwait(false);
         }
 
-        private void CheckChosenInlineResult(Update update)
+        /// <summary>
+        /// Handles the "/start" command. 
+        /// </summary>
+        /// <param name="botClient"></param>
+        /// <param name="cancellationToken"></param>
+        /// <param name="chatId"></param>
+        /// <param name="userFirstName"></param>
+        /// <returns></returns>
+        private async Task HandleStartCommandAsync(ITelegramBotClient botClient, CancellationToken cancellationToken, long chatId, string userFirstName)
         {
-            Console.WriteLine("Received ChosenInlineResult.");
+            Message sendSticker = await botClient.SendStickerAsync(
+                    chatId: chatId,
+                    sticker: "CAACAgIAAxkBAAEEKwliMJIttXq76fgq4G2dpIos37lixgACBQADwDZPE_lqX5qCa011IwQ",
+                    cancellationToken: cancellationToken);
+
+            Message sendGreetingMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: $"Привет, {userFirstName}!\n\n" +
+                      "Меня зовут Growther. " +
+                      "Я был создан, чтобы сделать брейнштормы в твоей команде эффективнее " +
+                      $"(используй меня, чтобы автоматизировать брейнштормы в твоей команде)\n\n",
+                replyMarkup: replyMarkupUnathorized,
+                cancellationToken: cancellationToken);
+
+            Message sendRulesMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Чтобы начать, авторизуйся с помощью команды Авторизация",
+                cancellationToken: cancellationToken);
+        }
+        private Task HandleErrorAsync(ITelegramBotClient arg1, Exception arg2, CancellationToken arg3)
+        {
+            throw new NotImplementedException();
         }
     }
 }
