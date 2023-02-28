@@ -56,6 +56,7 @@ namespace IDecisBot
                     new KeyboardButton[] { "Добавить критерий"},
                     new KeyboardButton[] { "Начать голосование"},
                     new KeyboardButton[] { "Посмотреть статистику"},
+                    new KeyboardButton[] { "Пройти тест Белбина"}
                 })
         {
             ResizeKeyboard = true
@@ -178,7 +179,8 @@ namespace IDecisBot
             {
                 Message sendMessage = await botClient.SendTextMessageAsync(
                 chatId: chatId,
-                text: "Вы не авторизовались!");
+                text: "Вы не авторизовались!",
+                replyMarkup: replyMarkupUnathorized);
                 return;
             }
 
@@ -248,6 +250,38 @@ namespace IDecisBot
                 return;
             }
 
+            if(userChat.inBelbin)
+            {
+                int result = userChat.belbin.ParseAnswer(messageText);
+                if(result == -1)
+                {
+                    await userChat.SendMessageAsync(botClient, "Вы прислали ответ в неправильном формате. Используйте шаблон!", null).ConfigureAwait(false);
+                }
+                else if(result == -2)
+                {
+                    await userChat.SendMessageAsync(botClient, "В сумме должно получаться 10. Смотрите пример!", null).ConfigureAwait(false);
+                }
+                else if(result == 0 && !userChat.belbin.end)
+                {
+                    await userChat.SendMessageAsync(botClient, userChat.belbin.GetHead(), null).ConfigureAwait(false);
+                    string prompts = "";
+                    string[] headPrompts = userChat.belbin.GetPrompts();
+                    for (int i = 0; i < headPrompts.Length; i++) prompts += headPrompts[i] + '\n';
+                    await userChat.SendMessageAsync(botClient, prompts, null).ConfigureAwait(false);
+                }
+                else if (result == 0 && userChat.belbin.end)
+                {
+                    await userChat.SendMessageAsync(botClient, "Вы успешно прошли тест Белбина! Ваши результаты:", null).ConfigureAwait(false);
+                    Dictionary<string, int> results = userChat.belbin.GetResults();
+                    foreach (string key in results.Keys)
+                    {
+                        await userChat.SendMessageAsync(botClient, key + ". Результат: " + results[key].ToString(), userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
+                    }
+                    userChat.inBelbin = false;
+                }
+                return;
+            }
+
             string command = messageText.ToLower().Trim();
 
             if (command == "добавить идею")
@@ -277,6 +311,12 @@ namespace IDecisBot
             if (command == "посмотреть статистику")
             {
                 await SendStatisticsAsync(userChat, botClient).ConfigureAwait(false);
+                return;
+            }
+
+            if (command == "пройти тест белбина")
+            {
+                await StartBelbinTest(userChat, botClient).ConfigureAwait(false);
                 return;
             }
 
@@ -356,6 +396,23 @@ namespace IDecisBot
 
                 await userChat.SendMessageAsync(botClient, "За идею " + ideas[i] + " проголосовало " + a + " человек, средний балл: " + s, userChat.leader ? replyMarkupLeader : replyMarkupUser).ConfigureAwait(false);
             }
+        }
+
+        private async Task StartBelbinTest(User userChat, ITelegramBotClient botClient)
+        {
+            userChat.belbin = new BelbinTest();
+
+            await userChat.SendMessageAsync(botClient, "Вы начали проходить тест Белбина. В каждом из семи разделов распределите 10 баллов между возможными ответами согласно тому, как Вы полагаете, они лучше всего подходят Вашему собственному поведению. Эти десять пунктов могут быть распределены поровну или, возможно, все приданы одному единственному ответу.", null).ConfigureAwait(false);
+            await userChat.SendMessageAsync(botClient, "Для проходения теста используйте следующий шаблон (скопируйте его, и вставляйте каждый раз ваши значения вместо нулей)", null).ConfigureAwait(false);
+            await userChat.SendMessageAsync(botClient, userChat.belbin.GetPattern(), null).ConfigureAwait(false);
+            await userChat.SendMessageAsync(botClient, "Пример заполнения шаблона (в сумме получается 10)", null).ConfigureAwait(false);
+            await userChat.SendMessageAsync(botClient, userChat.belbin.GetExample(), null).ConfigureAwait(false);
+            userChat.inBelbin = true;
+            await userChat.SendMessageAsync(botClient, userChat.belbin.GetHead(), null).ConfigureAwait(false);
+            string prompts = "";
+            string[] headPrompts = userChat.belbin.GetPrompts();
+            for (int i = 0; i < headPrompts.Length; i++) prompts += headPrompts[i] + '\n';
+            await userChat.SendMessageAsync(botClient, prompts, null).ConfigureAwait(false);
         }
 
         /// <summary>

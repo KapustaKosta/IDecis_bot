@@ -18,6 +18,8 @@ namespace IDecisBot
 
         public bool inPool;
 
+        public bool inBelbin;
+
         public bool listenForIdea;
 
         public bool listenForCriteria;
@@ -25,6 +27,8 @@ namespace IDecisBot
         public int poolQuestionNum;
         public int criteriaNum;
         public List<int[]> poolResults;
+
+        public BelbinTest belbin;
 
         public User()
         {
